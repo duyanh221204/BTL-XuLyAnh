@@ -4,8 +4,8 @@ from core.sift_features import detect_and_describe
 from core.matching import match_descriptors, draw_matches
 
 
-img1_path = "C:\\Users\OS\Downloads\z7224737489809_7d1d5c66342ed984ba02f7a24d841c84.jpg"
-img2_path = "C:\\Users\OS\Downloads\z7224737468682_f822f7825c5634abbed8a8521d9ae68a.jpg"
+img1_path = "C:\\Users\\HoaNgo\\Downloads\\2.png"
+img2_path = "C:\\Users\\HoaNgo\\Downloads\\1.png"
 
 img1 = cv2.imread(img1_path)
 img2 = cv2.imread(img2_path)
