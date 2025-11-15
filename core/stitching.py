@@ -129,55 +129,101 @@ def stitch_sequence(
     matcher_method: str = "bf",
 ) -> np.ndarray:
     """
-    Ghép N ảnh [img0, img1, img2, ...] thành 1 panorama.
-    Giả định các ảnh đã được sắp xếp theo thứ tự trái -> phải.
+    Ghép N ảnh thành panorama. Tự động:
+    - Center-based stitching (ảnh giữa làm chuẩn)
+    - Auto-resize ảnh lớn
+    - Tăng độ tương phản (tránh lệch màu)
     """
     if not images:
         raise ValueError("Danh sách images trống.")
     if len(images) == 1:
         return images[0]
 
-    pano = images[0]
-    for img in images[1:]:
-        pano = stitch_pair(
-            pano,
-            img,
-            ratio=ratio,
-            ransac_thresh=ransac_thresh,
-            matcher_method=matcher_method,
-        )
+    # Resize ảnh nếu quá lớn
+    MAX_DIM = 1500
+    resized_images = []
+    
+    for img in images:
+        h, w = img.shape[:2]
+        if max(h, w) > MAX_DIM:
+            scale = MAX_DIM / max(h, w)
+            new_w, new_h = int(w * scale), int(h * scale)
+            resized_images.append(cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA))
+            print(f"[INFO] Resize ảnh: {w}x{h} -> {new_w}x{new_h}")
+        else:
+            resized_images.append(img)
+    
+    images = resized_images
+
+    # Ghép theo center-based
+    if len(images) >= 3:
+        print(f"[INFO] Ghép {len(images)} ảnh (ảnh giữa làm chuẩn)...")
+        pano = _stitch_center_based(images, ratio, ransac_thresh, matcher_method)
+    else:
+        print(f"[INFO] Ghép {len(images)} ảnh...")
+        pano = _stitch_two_images(images, ratio, ransac_thresh, matcher_method)
+    
+    # Xử lý hậu kỳ
+    print("[INFO] Xử lý hậu kỳ...")
+    pano = _postprocess(pano)
+    
     return pano
 
 
-def stitch_from_paths(
-    image_paths: Sequence[str],
-    ratio: float = 0.6,
-    ransac_thresh: float = 4.0,
-    matcher_method: str = "bf",
+def _stitch_two_images(
+    images: List[np.ndarray],
+    ratio: float,
+    ransac_thresh: float,
+    matcher_method: str,
 ) -> np.ndarray:
-    """
-    Ghép 1 panorama từ danh sách đường dẫn ảnh.
+    """Ghép 1-2 ảnh đơn giản"""
+    if len(images) == 1:
+        return images[0]
+    
+    try:
+        return stitch_pair(images[0], images[1], ratio, ransac_thresh, matcher_method)
+    except RuntimeError:
+        print("[WARN] Thử lại với tham số dễ hơn...")
+        return stitch_pair(images[0], images[1], 0.8, ransac_thresh * 1.5, matcher_method)
 
-    Ví dụ:
-        pano = stitch_from_paths([
-            "data/pano1_1.jpg",
-            "data/pano1_2.jpg",
-            "data/pano1_3.jpg",
-        ])
-    """
-    if not image_paths:
-        raise ValueError("Danh sách đường dẫn ảnh trống.")
 
-    images: List[np.ndarray] = []
-    for p in image_paths:
-        img = cv2.imread(p)
-        if img is None:
-            raise FileNotFoundError(f"Không đọc được ảnh: {p}")
-        images.append(img)
+def _stitch_center_based(
+    images: List[np.ndarray],
+    ratio: float,
+    ransac_thresh: float,
+    matcher_method: str,
+) -> np.ndarray:
+    """Center-based stitching: ảnh giữa làm chuẩn"""
+    n = len(images)
+    center_idx = n // 2
+    
+    print(f"  → Ảnh #{center_idx + 1} làm chuẩn")
+    
+    # Ghép bên trái vào center
+    result = images[center_idx]
+    for i in range(center_idx - 1, -1, -1):
+        adaptive_ratio = min(ratio + abs(i - center_idx) * 0.05, 0.85)
+        try:
+            result = stitch_pair(images[i], result, adaptive_ratio, ransac_thresh, matcher_method)
+        except RuntimeError:
+            result = stitch_pair(images[i], result, 0.8, ransac_thresh * 1.5, matcher_method)
+    
+    # Ghép bên phải vào result
+    for i in range(center_idx + 1, n):
+        adaptive_ratio = min(ratio + abs(i - center_idx) * 0.05, 0.85)
+        try:
+            result = stitch_pair(result, images[i], adaptive_ratio, ransac_thresh, matcher_method)
+        except RuntimeError:
+            result = stitch_pair(result, images[i], 0.8, ransac_thresh * 1.5, matcher_method)
+    
+    return result
 
-    return stitch_sequence(
-        images,
-        ratio=ratio,
-        ransac_thresh=ransac_thresh,
-        matcher_method=matcher_method,
-    )
+
+def _postprocess(pano: np.ndarray) -> np.ndarray:
+    """Xử lý hậu kỳ: tăng độ tương phản"""
+    try:
+        from core.image_processing import postprocess_panorama
+        return postprocess_panorama(pano)
+    except Exception as e:
+        print(f"[WARN] Bỏ qua xử lý hậu kỳ: {e}")
+        return pano
