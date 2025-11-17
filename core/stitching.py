@@ -193,30 +193,179 @@ def _stitch_center_based(
     ransac_thresh: float,
     matcher_method: str,
 ) -> np.ndarray:
-    """Center-based stitching: ảnh giữa làm chuẩn"""
+    """
+    True Center-based stitching: Ảnh giữa GIỮ NGUYÊN hoàn toàn,
+    warp TẤT CẢ ảnh khác về hệ tọa độ ảnh giữa.
+    """
     n = len(images)
     center_idx = n // 2
     
-    print(f"  → Ảnh #{center_idx + 1} làm chuẩn")
+    print(f"  → Ảnh #{center_idx + 1} làm chuẩn (GIỮ NGUYÊN)")
     
-    # Ghép bên trái vào center
-    result = images[center_idx]
+    # 1. Tính tất cả các Homography về ảnh chuẩn
+    homographies = _compute_homographies_to_center(
+        images, center_idx, ratio, ransac_thresh, matcher_method
+    )
+    
+    # 2. Tính bounding box chứa tất cả ảnh
+    all_corners = []
+    for i, img in enumerate(images):
+        corners = _get_image_corners(img)
+        if i == center_idx:
+            # Ảnh chuẩn: không biến đổi
+            warped_corners = corners
+        else:
+            # Warp qua Homography
+            warped_corners = cv2.perspectiveTransform(corners, homographies[i])
+        all_corners.append(warped_corners)
+    
+    all_corners = np.concatenate(all_corners, axis=0)
+    [xmin, ymin] = np.int32(all_corners.min(axis=0).ravel() - 0.5)
+    [xmax, ymax] = np.int32(all_corners.max(axis=0).ravel() + 0.5)
+    
+    # 3. Ma trận translation để tránh tọa độ âm
+    translation = [-xmin, -ymin]
+    T = np.array([
+        [1, 0, translation[0]],
+        [0, 1, translation[1]],
+        [0, 0, 1],
+    ])
+    
+    print(f"  → Canvas: {xmax - xmin} x {ymax - ymin}")
+    
+    # 4. Warp tất cả ảnh vào canvas chung
+    canvas_shape = (ymax - ymin, xmax - xmin, 3)
+    panorama = _blend_images_to_canvas(
+        images, homographies, T, canvas_shape, center_idx
+    )
+    
+    return panorama
+
+
+def _compute_homographies_to_center(
+    images: List[np.ndarray],
+    center_idx: int,
+    ratio: float,
+    ransac_thresh: float,
+    matcher_method: str,
+) -> List[np.ndarray]:
+    """
+    Tính Homography từ mỗi ảnh về ảnh chuẩn (center).
+    
+    Returns
+    -------
+    homographies : List[np.ndarray]
+        Ma trận H cho mỗi ảnh. homographies[center_idx] = Identity.
+    """
+    n = len(images)
+    homographies = [None] * n
+    homographies[center_idx] = np.eye(3)  # Ảnh chuẩn: Identity matrix
+    
+    print("  → Tính Homography cho các ảnh bên trái...")
+    # Tính H cho các ảnh bên trái
+    H_accum = np.eye(3)
     for i in range(center_idx - 1, -1, -1):
         adaptive_ratio = min(ratio + abs(i - center_idx) * 0.05, 0.85)
         try:
-            result = stitch_pair(images[i], result, adaptive_ratio, ransac_thresh, matcher_method)
-        except RuntimeError:
-            result = stitch_pair(images[i], result, 0.8, ransac_thresh * 1.5, matcher_method)
+            # H: từ images[i] sang images[i+1]
+            H, _, _ = estimate_homography(
+                images[i+1], images[i],
+                adaptive_ratio, ransac_thresh, matcher_method
+            )
+            H_accum = H_accum @ H  # Tích lũy: từ images[i] về center
+            homographies[i] = H_accum.copy()
+            print(f"    ✓ Ảnh {i+1} → Center")
+        except RuntimeError as e:
+            print(f"    ⚠ Ảnh {i+1}: Thử lại với tham số dễ hơn...")
+            H, _, _ = estimate_homography(
+                images[i+1], images[i],
+                0.8, ransac_thresh * 1.5, matcher_method
+            )
+            H_accum = H_accum @ H
+            homographies[i] = H_accum.copy()
     
-    # Ghép bên phải vào result
+    print("  → Tính Homography cho các ảnh bên phải...")
+    # Tính H cho các ảnh bên phải
+    H_accum = np.eye(3)
     for i in range(center_idx + 1, n):
         adaptive_ratio = min(ratio + abs(i - center_idx) * 0.05, 0.85)
         try:
-            result = stitch_pair(result, images[i], adaptive_ratio, ransac_thresh, matcher_method)
-        except RuntimeError:
-            result = stitch_pair(result, images[i], 0.8, ransac_thresh * 1.5, matcher_method)
+            # H: từ images[i] sang images[i-1]
+            H, _, _ = estimate_homography(
+                images[i-1], images[i],
+                adaptive_ratio, ransac_thresh, matcher_method
+            )
+            H_accum = H_accum @ H  # Tích lũy: từ images[i] về center
+            homographies[i] = H_accum.copy()
+            print(f"    ✓ Ảnh {i+1} → Center")
+        except RuntimeError as e:
+            print(f"    ⚠ Ảnh {i+1}: Thử lại với tham số dễ hơn...")
+            H, _, _ = estimate_homography(
+                images[i-1], images[i],
+                0.8, ransac_thresh * 1.5, matcher_method
+            )
+            H_accum = H_accum @ H
+            homographies[i] = H_accum.copy()
     
-    return result
+    return homographies
+
+
+def _get_image_corners(img: np.ndarray) -> np.ndarray:
+    """Lấy 4 góc của ảnh dưới dạng array (4, 1, 2)"""
+    h, w = img.shape[:2]
+    return np.float32([
+        [0, 0], [w, 0], [w, h], [0, h]
+    ]).reshape(-1, 1, 2)
+
+
+def _blend_images_to_canvas(
+    images: List[np.ndarray],
+    homographies: List[np.ndarray],
+    T: np.ndarray,
+    canvas_shape: tuple,
+    center_idx: int,
+) -> np.ndarray:
+    """
+    Warp và blend tất cả ảnh vào canvas chung.
+    Ảnh chuẩn (center) chỉ được dịch chuyển, KHÔNG bị warp.
+    """
+    canvas = np.zeros(canvas_shape, dtype=np.uint8)
+    canvas_h, canvas_w = canvas_shape[:2]
+    
+    print("  → Blending ảnh vào canvas...")
+    
+    # Warp tất cả ảnh (trừ ảnh chuẩn) vào canvas
+    for i, img in enumerate(images):
+        if i == center_idx:
+            continue  # Xử lý ảnh chuẩn sau cùng
+        
+        if i < center_idx:
+            print(f"    → Warp ảnh {i+1} (bên trái)")
+        else:
+            print(f"    → Warp ảnh {i+1} (bên phải)")
+        
+        # Ma trận cuối cùng: Translation + Homography
+        H_final = T @ homographies[i]
+        
+        # Warp ảnh
+        warped = cv2.warpPerspective(img, H_final, (canvas_w, canvas_h))
+        
+        # Blend (simple: overwrite non-black pixels)
+        mask = (warped > 0).any(axis=2)
+        canvas[mask] = warped[mask]
+    
+    # Dán ảnh chuẩn (GIỮ NGUYÊN chất lượng)
+    print(f"    → Dán ảnh {center_idx+1} (chuẩn - GIỮ NGUYÊN)")
+    center_img = images[center_idx]
+    h_center, w_center = center_img.shape[:2]
+    
+    # Chỉ áp dụng translation, KHÔNG warp
+    tx, ty = int(T[0, 2]), int(T[1, 2])
+    
+    # Dán ảnh chuẩn vào canvas
+    canvas[ty : ty + h_center, tx : tx + w_center] = center_img
+    
+    return canvas
 
 
 def _postprocess(pano: np.ndarray) -> np.ndarray:
