@@ -3,16 +3,6 @@ import numpy as np
 from typing import List, Tuple
 
 
-def create_matcher(method: str = "bf") -> cv2.DescriptorMatcher:
-    """
-    Tạo matcher cho SIFT (dùng norm L2).
-    method = "bf"   -> Brute-Force
-    method = "flann"-> FLANN-based matcher
-    """
-    method = method.lower()
-    # crossCheck = False để dùng được knnMatch + ratio test
-    return cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
-
 
 def match_descriptors(
         desc1: np.ndarray,
@@ -43,7 +33,7 @@ def match_descriptors(
     if len(desc1) == 0 or len(desc2) == 0:
         return []
 
-    matcher = create_matcher(method)
+    matcher = cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
 
     # knnMatch: với mỗi descriptor bên ảnh 1 -> tìm 2 "hàng xóm" gần nhất ở ảnh 2
     raw_matches = matcher.knnMatch(desc1, desc2, k=2)
