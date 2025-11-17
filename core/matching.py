@@ -10,15 +10,8 @@ def create_matcher(method: str = "bf") -> cv2.DescriptorMatcher:
     method = "flann"-> FLANN-based matcher
     """
     method = method.lower()
-    if method == "bf":
-        # crossCheck = False để dùng được knnMatch + ratio test
-        return cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
-    elif method == "flann":
-        index_params = dict(algorithm=1, trees=5)  # FLANN_INDEX_KDTREE = 1
-        search_params = dict(checks=50)
-        return cv2.FlannBasedMatcher(index_params, search_params)
-    else:
-        raise ValueError(f"Unknown matcher method: {method}")
+    # crossCheck = False để dùng được knnMatch + ratio test
+    return cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
 
 
 def match_descriptors(

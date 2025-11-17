@@ -182,7 +182,7 @@ class PanoramaApp:
         matcher_combo = ttk.Combobox(
             param_frame,
             textvariable=self.matcher_var,
-            values=["bf", "flann"],
+            values=["bf"],
             state="readonly",
             width=15
         )
